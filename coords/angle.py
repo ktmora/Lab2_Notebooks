@@ -1,57 +1,81 @@
 # File: angle.py
 
 import numpy as np
+import ugradio
 
+def to_rect(lon_deg, lat_deg):
+    """
+    lon, lat in DEGREES -> 3D unit vector (x,y,z).
+    """
+    lon = np.deg2rad(lon_deg)
+    lat = np.deg2rad(lat_deg)
 
-def to_rect(long, lat):
-	"""
-	This function takes in latitude and longitude and converts said angles to rectangular coodinates in a 3-element vector called x.
-	"""
+    x = np.zeros(3, dtype=float)
+    x[0] = np.cos(lat) * np.cos(lon)
+    x[1] = np.cos(lat) * np.sin(lon)
+    x[2] = np.sin(lat)
+    return x
 
-	# Initialize 3-coordinate x vector 
-	x = np.array([0, 0, 0])
+def HA(l_deg, b_deg, elevation=0):
+    """
+    Galactic (l,b) in degrees -> local horizon-frame VECTOR (not yet alt/az angles).
+    Returns a 3-vector in the final local frame.
+    """
 
-	# Assign values to x vector from (lat, long)
-	x[0] = np.cos(lat) * np.cos(long) 
-	x[1] = np.cos(lat) * np.sin(long)
-	x[2] = np.sin(lat)
+    # Galactic lon/lat -> Cartesian
+    x_gal = to_rect(l_deg, b_deg)
 
-	return x
+    # Equatorial -> Galactic (J2000) rotation (your numbers, slightly more standard precision is OK too)
+    EQ_TO_GAL = np.array([
+        [-0.054876, -0.873437, -0.483835],
+        [ 0.494109, -0.444830,  0.746982],
+        [-0.867666, -0.198076,  0.455984],
+    ], dtype=float)
 
+    # Galactic -> Equatorial
+    GAL_TO_EQ = np.linalg.inv(EQ_TO_GAL)
+    x_eq = GAL_TO_EQ @ x_gal
 
-def HA(x, desired_galactic_coords = (120, 0), rev=False):
-	"""
-	Converts spherical coordinates to rectangular, then uses those coordinates to give the correct local coordinates based off the desired galactic coordinates.  
-	"""
-	# Applying the rotation matrix R (NEED TO SPECIFY WHAT THIS IS)
-	xp = np.dot(R, x)
+    # LST
+    lst = ugradio.timing.lst()  # often HOURS in ugradio
+    # convert hours -> radians (robust heuristic)
+    if lst > 2*np.pi:
+        lst_rad = (lst / 24.0) * 2*np.pi
+    else:
+        lst_rad = lst
 
-	# Convert xp (x-primed) to new set of spherical coordinates (long', lat')
-	longp = np.arctan2(xp[1], xp[0])
-	latp = np.arcsin(xp[2])
+    # "RD_to_HD": rotate equatorial vector by +LST about z
+    RD_to_HD = np.array([
+        [ np.cos(lst_rad),  np.sin(lst_rad), 0.0],
+        [-np.sin(lst_rad),  np.cos(lst_rad), 0.0],
+        [ 0.0,              0.0,             1.0],
+    ], dtype=float)
 
-	if rev == True:
-	# Inverse (from prime to unprimed values)
-	iR = np.linalg.inv(R)
-	x = np.dot(iR, xp)
+    x_hd = RD_to_HD @ x_eq
 
-	else:
-	xp = np.dot(R, x)
+    # site latitude
+    phi = np.deg2rad(37.8732)  # radians
 
-	return
+    # "HD_to_AA": your matrix (keep it) but apply matrix @ vector
+    HD_to_AA = np.array([
+        [-np.sin(phi), 0.0,  np.cos(phi)],
+        [ 0.0,        -1.0,  0.0],
+        [ np.cos(phi), 0.0,  np.sin(phi)],
+    ], dtype=float)
 
-	# Different Rotation Matricies (R)
+    x_local = HD_to_AA @ x_hd
+    return x_local
 
+v = HA(120, 0)
+print("local vector:", v)
 
-	# Equatorial to Galactic
-	# Needs to be reversed to go from Galactic to equatorial
-	eq_to_gal = np.array([ [-0.054876, -0.873437, -0.483835], [0.494109, -0.444830, 0.746982], [-0.867666, -0.198076, 0.455984] ])
+def vec_to_altaz():
+	x, y, z = v
+	alt = np.arcsin(np.clip(z, -1, 1))
+	az = np.arctan2(y, x) % (2*np.pi)
+	return np.rad2deg(alt), np.rad2deg(az)
 
-	# Equatorial to topical: (Ra, Dec) to (Ha, Dec)
-        RD_to_HD = np.array([ [np.cos(LST), np.sin(LST, 0], [np.sin(LST), -1*np.cos(LST), 0], [0, 0, 1]])
+alt_deg, az_deg = vec_to_altaz(HA(120, 0))
+print("alt (deg):", alt_deg, "az (deg):", az_deg)
 
-	# Topical to Local: aka (Ha, Dec) to (Azimuth, Altitude)
-        # Becauase (Ha, Dec) are Earth-based coords,this conversion only depends on your terestrial latitude (phi)
-        phi = 37.8732 # for NHC
-        HD_to_AA = np.array([ [-1*np.sin(phi), 0, np.cos(phi)], [0, -1, 0], [np.cos(phi), 0, np.sin(phi)] ])
 
